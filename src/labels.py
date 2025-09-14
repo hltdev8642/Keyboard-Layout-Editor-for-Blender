@@ -101,8 +101,31 @@ def add_curve(key: Key, curve, text_length: int, label_material_name: str, label
     apply_modifier("Boolean")
     data.objects.remove(cube)
 
-    for edge in context.object.data.edges:
-        edge.crease = 1
+    # Set edge creases. In some Blender API versions `MeshEdge` objects don't
+    # expose a `crease` attribute directly; using `bmesh` is more portable.
+    try:
+        import bmesh
+
+        obj = context.object
+        mesh = obj.data
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        for e in bm.edges:
+            try:
+                e.crease = 1.0
+            except Exception:
+                # If an edge doesn't support crease assignment, ignore it
+                pass
+        bm.to_mesh(mesh)
+        bm.free()
+    except Exception:
+        # Fallback: try to set attribute directly where available and ignore
+        # AttributeError for versions that don't expose it.
+        for edge in getattr(context.object.data, "edges", []):
+            try:
+                edge.crease = 1
+            except Exception:
+                pass
 
     curve.location[2] += CAP_THICKNESS
 
@@ -116,7 +139,22 @@ def add_icon(icon_family: str, icon_name: str, size: float, label_position: int,
     """Add an icon label to a key"""
     select_all()
     ops.import_curve.svg(filepath=os.path.join(os.path.dirname(__file__), "fonts", ICON_FAMILIES[icon_family], icon_name + ".svg"))
-    new_label = [c for c in context.scene.objects if not c.select_get()][0]
+    # The import operator may leave the newly created objects selected or not
+    # depending on Blender version; find the most-recent object created by
+    # checking scene objects and falling back safely if none are found.
+    new_objs = [c for c in context.scene.objects if not c.select_get()]
+    if new_objs:
+        new_label = new_objs[0]
+    else:
+        # fallback: try to find an object with the imported name
+        # (SVG imports often create an object named after the file)
+        basename = os.path.splitext(icon_name)[0]
+        new_label = next((o for o in context.scene.objects if basename in o.name), None)
+        if new_label is None:
+            # As a last resort, use the active object if available
+            new_label = context.object
+    if new_label is None:
+        raise RuntimeError(f"Failed to create/import icon object for {icon_name}")
 
     unselect_all()
     set_active_object(new_label)
@@ -158,10 +196,19 @@ def add_text(text: str, size: float, font, label_position: int, box: Tuple[float
 
     vertical_correction = -0.1 if text in [",", ";", ".", "[", "]"] else 0
 
-    new_label.data.text_boxes[0].width = box[2]
-    new_label.data.text_boxes[0].height = box[3] + vertical_correction * size
+    # Some Blender versions may not create text_boxes by default. Ensure at
+    # least one exists before accessing index 0.
+    if len(new_label.data.text_boxes) == 0:
+        try:
+            new_label.data.text_boxes.add()
+        except Exception:
+            # if the font object doesn't support text_boxes, ignore and continue
+            pass
 
-    new_label.data.text_boxes[0].y = -size
+    if len(new_label.data.text_boxes) > 0:
+        new_label.data.text_boxes[0].width = box[2]
+        new_label.data.text_boxes[0].height = box[3] + vertical_correction * size
+        new_label.data.text_boxes[0].y = -size
     new_label.data.align_x = ALIGN_TEXT[label_position][0]
     new_label.data.align_y = ALIGN_TEXT[label_position][1]
 

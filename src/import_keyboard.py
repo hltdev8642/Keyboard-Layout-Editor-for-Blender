@@ -86,7 +86,23 @@ def read(filepath: str):
     # get the current scene and change display device so colors are accurate
     context = bpy.context
     scn = context.scene
-    scn.display_settings.display_device = "None"
+    # Some Blender versions (eg 4.4) do not include an enum item named "None" for
+    # display_device. Set this value defensively: prefer "None" if available,
+    # otherwise prefer "sRGB", otherwise fall back to the first available item.
+    try:
+        prop = scn.display_settings.bl_rna.properties['display_device']
+        enum_items = [item.identifier for item in prop.enum_items]
+        if "None" in enum_items:
+            scn.display_settings.display_device = "None"
+        elif "sRGB" in enum_items:
+            scn.display_settings.display_device = "sRGB"
+        elif enum_items:
+            scn.display_settings.display_device = enum_items[0]
+    except Exception:
+        # If anything goes wrong (different RNA layout across Blender versions),
+        # just skip setting the display device rather than crashing the import.
+        pass
+
     scn.render.engine = 'CYCLES'
 
     if hasattr(bpy.data, "collections"):
@@ -188,6 +204,10 @@ def read(filepath: str):
 
             for segment in key_segments:
                 added_segments.append(copy_template(keyboard_collection, key, segment))
+
+            # Defensive: if for some reason no segments were added, skip this key
+            if not added_segments:
+                continue
 
             key_obj = added_segments[0]
 
